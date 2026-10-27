@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -51,6 +52,22 @@ private fun prettyDate(key: String): String = try {
 private class WorkoutStore(context: Context) {
     private val prefs = context.getSharedPreferences("level_up_data", Context.MODE_PRIVATE)
     fun readGoal() = prefs.getInt("goal", 20)
+    fun readCustomExercises(): List<String> = prefs.getString("custom_exercises", "")!!.split("\n")
+        .map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+    fun addCustomExercise(name: String): List<String> {
+        val clean = name.trim().replace("|", "").replace("\n", " ").take(32)
+        val all = readCustomExercises().toMutableList()
+        if (clean.isNotBlank() && (clean.equals("Push-ups", true) || clean.equals("Squats", true) || clean.equals("Sit-ups", true) || all.any { it.equals(clean, true) })) return all
+        all.add(clean)
+        val saved = all.filter { it.isNotBlank() }.distinctBy { it.lowercase() }.sortedBy { it.lowercase() }
+        prefs.edit().putString("custom_exercises", saved.joinToString("\n")).apply()
+        return saved
+    }
+    fun removeCustomExercise(name: String): List<String> {
+        val saved = readCustomExercises().filterNot { it.equals(name, true) }
+        prefs.edit().putString("custom_exercises", saved.joinToString("\n")).apply()
+        return saved
+    }
     fun writeGoal(value: Int) { prefs.edit().putInt("goal", value.coerceAtLeast(1)).apply() }
     fun readRestDays(): Set<String> = prefs.getString("rest_days", "")!!.split(",").filter { it.isNotBlank() }.toSet()
     fun toggleRest(day: String): Set<String> {
@@ -78,6 +95,7 @@ private class WorkoutStore(context: Context) {
 private fun LevelUpApp(context: Context) {
     val store = remember { WorkoutStore(context) }
     var workouts by remember { mutableStateOf(store.readWorkouts()) }
+    var customExercises by remember { mutableStateOf(store.readCustomExercises()) }
     var goal by remember { mutableIntStateOf(store.readGoal()) }
     var restDays by remember { mutableStateOf(store.readRestDays()) }
     var tab by remember { mutableIntStateOf(0) }
@@ -85,6 +103,9 @@ private fun LevelUpApp(context: Context) {
     var repsText by remember { mutableStateOf("10") }
     var showLog by remember { mutableStateOf(false) }
     var showGoal by remember { mutableStateOf(false) }
+    var showManageWorkouts by remember { mutableStateOf(false) }
+    var showAddCustom by remember { mutableStateOf(false) }
+    var customName by remember { mutableStateOf("") }
     var goalText by remember { mutableStateOf(goal.toString()) }
     var toast by remember { mutableStateOf("") }
 
@@ -157,11 +178,11 @@ private fun LevelUpApp(context: Context) {
                 1 -> HistoryScreen(Modifier.padding(padding), workouts, restDays)
                 2 -> ProgressScreen(Modifier.padding(padding), totalReps, workouts.size, streak, xp, level, goal, workouts)
                 else -> SettingsScreen(
-                    Modifier.padding(padding), goal, goalText, { goalText = it },
-                    onEditGoal = { showGoal = true },
+                    Modifier.padding(padding), goal, goalText, { goalText = it }, customExercises,
+                    onManageWorkouts = { showManageWorkouts = true }, onEditGoal = { showGoal = true },
                     onReset = {
                         store.clearAll()
-                        workouts = emptyList(); restDays = emptySet(); goal = 20; goalText = "20"
+                        workouts = emptyList(); restDays = emptySet(); goal = 20; goalText = "20"; customExercises = emptyList()
                         toast = "All local data reset"
                     }
                 )
@@ -173,10 +194,13 @@ private fun LevelUpApp(context: Context) {
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("Choose exercise", color = Muted)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf("Push-ups", "Squats", "Sit-ups", "Other").forEach { item ->
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                (listOf("Push-ups", "Squats", "Sit-ups") + customExercises).forEach { item ->
                                     FilterChip(selected = exercise == item, onClick = { exercise = item }, label = { Text(item) })
                                 }
+                            }
+                            OutlinedButton(onClick = { showAddCustom = true; customName = "" }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.Add, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Add custom workout")
                             }
                             OutlinedTextField(
                                 value = repsText, onValueChange = { repsText = it.filter(Char::isDigit).take(5) },
@@ -199,6 +223,63 @@ private fun LevelUpApp(context: Context) {
                     },
                     dismissButton = { TextButton(onClick = { showLog = false }) { Text("Cancel") }
                     },
+                    containerColor = Panel
+                )
+            }
+            if (showAddCustom) {
+                AlertDialog(
+                    onDismissRequest = { showAddCustom = false },
+                    title = { Text("Add custom workout") },
+                    text = {
+                        OutlinedTextField(
+                            value = customName, onValueChange = { customName = it.take(32) },
+                            label = { Text("Workout name") }, singleLine = true,
+                            supportingText = { Text("Example: Pull-ups, Plank, Lunges") }
+                        )
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            val clean = customName.trim()
+                            val exists = (listOf("Push-ups", "Squats", "Sit-ups") + customExercises).any { it.equals(clean, true) }
+                            if (clean.isNotBlank() && !exists) {
+                                customExercises = store.addCustomExercise(clean)
+                                exercise = clean
+                                showAddCustom = false
+                                toast = "Custom workout added"
+                            } else if (exists) toast = "That workout already exists"
+                        }) { Text("Add workout") }
+                    },
+                    dismissButton = { TextButton(onClick = { showAddCustom = false }) { Text("Cancel") } },
+                    containerColor = Panel
+                )
+            }
+            if (showManageWorkouts) {
+                AlertDialog(
+                    onDismissRequest = { showManageWorkouts = false },
+                    title = { Text("Manage workouts") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Built-in workouts", color = Muted)
+                            Text("Push-ups · Squats · Sit-ups", color = Paper)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Custom workouts", color = Muted)
+                            if (customExercises.isEmpty()) Text("No custom workouts yet.", color = Muted)
+                            customExercises.forEach { name ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(name, color = Paper, modifier = Modifier.weight(1f))
+                                    IconButton(onClick = {
+                                        customExercises = store.removeCustomExercise(name)
+                                        if (exercise == name) exercise = "Push-ups"
+                                        toast = "Removed from workout list"
+                                    }) { Icon(Icons.Default.DeleteOutline, contentDescription = "Remove $name", tint = Color(0xFFFF8585)) }
+                                }
+                            }
+                            OutlinedButton(onClick = { showManageWorkouts = false; showAddCustom = true; customName = "" }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.Add, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Add custom workout")
+                            }
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { showManageWorkouts = false }) { Text("Done") } },
                     containerColor = Panel
                 )
             }
@@ -401,7 +482,7 @@ private fun ProgressScreen(modifier: Modifier, total: Int, sessions: Int, streak
 }
 
 @Composable
-private fun SettingsScreen(modifier: Modifier, goal: Int, goalText: String, onGoalText: (String) -> Unit, onEditGoal: () -> Unit, onReset: () -> Unit) {
+private fun SettingsScreen(modifier: Modifier, goal: Int, goalText: String, onGoalText: (String) -> Unit, customExercises: List<String>, onManageWorkouts: () -> Unit, onEditGoal: () -> Unit, onReset: () -> Unit) {
     var confirmReset by remember { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 18.dp, bottom = 20.dp)) {
         item { Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Paper); Text("Make the system work for you.", color = Muted) }
@@ -411,6 +492,19 @@ private fun SettingsScreen(modifier: Modifier, goal: Int, goalText: String, onGo
                     Icon(Icons.Default.Flag, contentDescription = null, tint = Lime)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) { Text("Daily push-up goal", color = Paper, fontWeight = FontWeight.Bold); Text("$goal reps per day", color = Muted, fontSize = 13.sp) }
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Muted)
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+                Row(Modifier.fillMaxWidth().clickable(onClick = onManageWorkouts).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.FitnessCenter, contentDescription = null, tint = Lime)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Manage workouts", color = Paper, fontWeight = FontWeight.Bold)
+                        Text("${customExercises.size} custom workout${if (customExercises.size == 1) "" else "s"}", color = Muted, fontSize = 13.sp)
+                    }
                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Muted)
                 }
             }
@@ -429,13 +523,13 @@ private fun SettingsScreen(modifier: Modifier, goal: Int, goalText: String, onGo
                 Icon(Icons.Default.DeleteOutline, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Reset all app data")
             }
         }
-        item { Text("Version 1.0 · Made for steady progress", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
+        item { Text("Version 2.0 preview · Made for steady progress", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
     }
     if (confirmReset) {
         AlertDialog(
             onDismissRequest = { confirmReset = false },
             title = { Text("Reset all data?") },
-            text = { Text("This permanently clears workout history and rest days from this device.") },
+            text = { Text("This permanently clears workout history, rest days, goals and custom workouts from this device.") },
             confirmButton = { Button(onClick = { confirmReset = false; onReset() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB93838))) { Text("Reset") } },
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
             containerColor = Panel
